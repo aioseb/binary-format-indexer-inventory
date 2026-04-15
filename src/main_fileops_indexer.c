@@ -10,23 +10,23 @@
 int validate_directory(const char* path){
     if(path == NULL){
         fprintf(stderr, "Eroare: directorul sursa nu a fost introdus!\n");
-        exit(2);
+        return 2;
     }
 
     // Verificam daca <dir> este un director, daca exista, si daca poate fi citit
     struct stat dir_st;
-    if(stat(path, &dir_st) == 0){;
+    if(stat(path, &dir_st) == 0){
         if(!S_ISDIR(dir_st.st_mode)){
             fprintf(stderr, "Eroare: directorul sursa nu exista sau nu este de tip 'directory'!\n");
-            exit(3);
+            return 3;
         }
-        if(!(dir_st.st_mode & R_OK)){
-            fprintf(stderr, "Eroare: nu exista drepturi de citire pentru directorul dat!\n");
-            exit(3);
+        if(access(path, R_OK | X_OK) != 0){
+            fprintf(stderr, "Eroare: nu exista drepturi de citire si/sau transversare pentru directorul dat!\n");
+            return 1;
         }
     } else{
         perror("Eroare stat");
-        exit(1);
+        return 1;
     }
 
     return 0;
@@ -35,15 +35,15 @@ int validate_directory(const char* path){
 int validate_destination(const char* path){
     if(path == NULL){
         fprintf(stderr, "Eroare: destinatia nu a fost introdusa!\n");
-        exit(2);
+        return 2;
     }
 
     // Validam destinatia. Daca aceasta nu exista, cream o baza de date noua
     // Ne asiguram ca aceasta poate fi suprascrisa.
     int fd;
-    if(-1 == (fd = open(path, O_WRONLY | O_CREAT, 0755))){
+    if(-1 == (fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644))){
         perror("Eroare open");
-        exit(1);
+        return 1;
     }
     close(fd);
 
@@ -75,8 +75,15 @@ int main(int argc, char** argv){
         }
     }
 
-    validate_directory(dir);
-    validate_destination(dest);
+    if(0 != validate_directory(dir)){
+        fprintf(stderr, "Eroare: validare director\n");
+        exit(1);
+    };
+
+    if(0 != validate_destination(dest)){
+        fprintf(stderr, "Eroare: validare destinatie\n");
+        exit(1);
+    };
 
     printf("%s %s\n", dir, dest);
 }
