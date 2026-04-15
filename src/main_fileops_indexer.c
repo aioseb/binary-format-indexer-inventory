@@ -13,8 +13,8 @@ char resolved_path[PATH_MAX + 1];   // Buffer folosit pentru caile absolute in t
 int fd_db = -1;  // File decsriptor-ul global pentru baza de date
 
 struct db_entry{
-    const char* absolute_path;
-    const char* type;
+    char absolute_path[PATH_MAX];
+    char type[16];
     off_t size_bytes;
     time_t mtime;
     unsigned long long hash;
@@ -86,7 +86,8 @@ int build_entry(const char* path, struct db_entry* entry){
         return 1;
     }
 
-    entry->absolute_path = path;
+    strncpy(entry->absolute_path, path, PATH_MAX);
+    entry->absolute_path[PATH_MAX - 1] = '\0';  // Asiguram null-termination
     entry->size_bytes = st.st_size;
     entry->mtime = st.st_mtime;
     entry->hash = fnv1a(path);
@@ -94,14 +95,18 @@ int build_entry(const char* path, struct db_entry* entry){
     entry->inode = st.st_ino;
 
     // Determina tipul fisierului
-    if(S_ISREG(st.st_mode)) entry->type = "regular";
-    else if(S_ISDIR(st.st_mode)) entry->type = "directory";
-    else if(S_ISLNK(st.st_mode)) entry->type = "symlink";
-    else if(S_ISCHR(st.st_mode)) entry->type = "characterdev";
-    else if(S_ISBLK(st.st_mode)) entry->type = "blockdev";
-    else if(S_ISFIFO(st.st_mode)) entry->type = "fifo";
-    else if(S_ISSOCK(st.st_mode)) entry->type = "socket";
-    else entry->type = "unknown";
+    char type[16];
+    if(S_ISREG(st.st_mode)) strncpy(type, "regular", 16);
+    else if(S_ISDIR(st.st_mode)) strncpy(type, "directory", 16);
+    else if(S_ISLNK(st.st_mode)) strncpy(type, "symlink", 16);
+    else if(S_ISCHR(st.st_mode)) strncpy(type, "chardev", 16);
+    else if(S_ISBLK(st.st_mode)) strncpy(type, "blockdev", 16);
+    else if(S_ISFIFO(st.st_mode)) strncpy(type, "fifo", 16);
+    else if(S_ISSOCK(st.st_mode)) strncpy(type, "socket", 16);
+    else strncpy(type, "unknown", 16);
+
+    strncpy(entry->type, type, 16);
+    entry->type[15] = '\0';
 
     return 0;
 }
@@ -110,27 +115,29 @@ int build_entry(const char* path, struct db_entry* entry){
 int append_entry(struct db_entry* entry){
     if(fd_db < 0){
         fprintf(stderr, "Eroare: baza de date nu este deschisa!\n");
-        exit(2);
+        return 2;
     }
 
-    write(fd_db, entry->absolute_path, sizeof(entry->absolute_path));
-    write(fd_db, " ", 1);
-
-    write(fd_db, entry->type, sizeof(entry->type));
-    write(fd_db, " ", 1);
-
-    write(fd_db, "\n", 1);
+    ssize_t w = write(fd_db, entry, sizeof(*entry));
+    if(w != sizeof(*entry)){    // Trateaza cazul in care scriem partial (se corupe intrarea)
+        perror("Eroare: write partial in append_entry");
+        return 1;
+    }
+    return 0;
 }
 
 // Construieste in maniera recursiva baza de date in <dest>
-int build_database(const char* dir, const char* dest){
+int build_database(const char* dir){
     DIR* dir_stream;
     struct dirent *ent;
     struct stat st;
     struct db_entry entry;
 
     char* abs_path_dir = realpath(dir, NULL);
-    printf("%s\n", abs_path_dir);
+    if(!abs_path_dir){
+        perror("Eroare: realpath in build_database");
+        return 1;
+    }
 
     if(NULL != (dir_stream = opendir(abs_path_dir))){
         while(NULL != (ent = readdir(dir_stream))){
@@ -140,15 +147,23 @@ int build_database(const char* dir, const char* dest){
 
             // Construieste calea absoluta in "resolved_path"
             snprintf(resolved_path, sizeof(resolved_path), "%s/%s", abs_path_dir, ent->d_name);
-            build_entry(resolved_path, &entry);
-            append_entry(&entry);
+
+            if(0 != build_entry(resolved_path, &entry)){
+                fprintf(stderr, "Eroare: build_entry in build_database!\n");
+                return 4;
+            };
+            
+            if(0 != append_entry(&entry)){
+                fprintf(stderr, "Eroare: append_entry in build_database!\n");
+                return 4;
+            };
             
             if(0 != lstat(resolved_path, &st)){
                 perror("Eroare stat build_database");
                 exit(1);
             };
             if(S_ISDIR(st.st_mode)){
-                build_database(resolved_path, dest);    // Parcurge recursiv directorul curent
+                build_database(resolved_path);    // Parcurge recursiv directorul curent
             }
         }
 
@@ -199,11 +214,17 @@ int main(int argc, char** argv){
     };
 
     if(-1 == (fd_db = open(dest, O_WRONLY | O_TRUNC))){
-        perror("Eroare deschidere destinatie");
+        perror("Eroare: deschidere destinatie");
         exit(1);
     }
 
-    build_database(dir, dest);
+    char* abs_path_dir = realpath(dir, NULL);
+    if(!abs_path_dir){
+        perror("Eroare: realpath in build_database");
+        return 1;
+    }
+
+    build_database(dir);
     close(fd_db);
 
     printf("%s %s\n", dir, dest);
