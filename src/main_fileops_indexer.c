@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/types.h>
@@ -8,18 +9,18 @@
 #include <fcntl.h>
 #include <dirent.h>
 
-#define PATH_MAX 256
-char resolved_path[PATH_MAX + 1];   // Buffer folosit pentru caile absolute in timpul recursiei (pentru a economisi memorie)
+#define PATH_MAX 1024
+#define TYPE_LEN_MAX 16
 int fd_db = -1;  // File decsriptor-ul global pentru baza de date
 
 struct db_entry{
     char absolute_path[PATH_MAX];
-    char type[16];
-    off_t size_bytes;
-    time_t mtime;
-    unsigned long long hash;
-    dev_t dev;
-    ino_t inode;
+    char type[TYPE_LEN_MAX];
+    uint64_t size_bytes;
+    uint64_t mtime;
+    uint64_t hash;
+    uint64_t dev;
+    uint64_t inode;
 };
 
 int validate_directory(const char* path){
@@ -82,7 +83,7 @@ unsigned long long fnv1a(const char* str){
 int build_entry(const char* path, struct db_entry* entry){
     struct stat st;
     if(0 != lstat(path, &st)){
-        perror("Eroare stat entry");
+        perror("Eroare lstat entry");
         return 1;
     }
 
@@ -91,22 +92,22 @@ int build_entry(const char* path, struct db_entry* entry){
     entry->size_bytes = st.st_size;
     entry->mtime = st.st_mtime;
     entry->hash = fnv1a(path);
-    entry->dev = st.st_dev;
-    entry->inode = st.st_ino;
+    entry->dev = (uint64_t)st.st_dev;
+    entry->inode = (uint64_t)st.st_ino;
 
     // Determina tipul fisierului
-    char type[16];
-    if(S_ISREG(st.st_mode)) strncpy(type, "regular", 16);
-    else if(S_ISDIR(st.st_mode)) strncpy(type, "directory", 16);
-    else if(S_ISLNK(st.st_mode)) strncpy(type, "symlink", 16);
-    else if(S_ISCHR(st.st_mode)) strncpy(type, "chardev", 16);
-    else if(S_ISBLK(st.st_mode)) strncpy(type, "blockdev", 16);
-    else if(S_ISFIFO(st.st_mode)) strncpy(type, "fifo", 16);
-    else if(S_ISSOCK(st.st_mode)) strncpy(type, "socket", 16);
-    else strncpy(type, "unknown", 16);
+    char type[TYPE_LEN_MAX];
+    if(S_ISREG(st.st_mode)) strncpy(type, "regular", TYPE_LEN_MAX);
+    else if(S_ISDIR(st.st_mode)) strncpy(type, "directory", TYPE_LEN_MAX);
+    else if(S_ISLNK(st.st_mode)) strncpy(type, "symlink", TYPE_LEN_MAX);
+    else if(S_ISCHR(st.st_mode)) strncpy(type, "chardev", TYPE_LEN_MAX);
+    else if(S_ISBLK(st.st_mode)) strncpy(type, "blockdev", TYPE_LEN_MAX);
+    else if(S_ISFIFO(st.st_mode)) strncpy(type, "fifo", TYPE_LEN_MAX);
+    else if(S_ISSOCK(st.st_mode)) strncpy(type, "socket", TYPE_LEN_MAX);
+    else strncpy(type, "unknown", TYPE_LEN_MAX);
 
-    strncpy(entry->type, type, 16);
-    entry->type[15] = '\0';
+    strncpy(entry->type, type, TYPE_LEN_MAX);
+    entry->type[TYPE_LEN_MAX - 1] = '\0';
 
     return 0;
 }
@@ -132,21 +133,16 @@ int build_database(const char* dir){
     struct dirent *ent;
     struct stat st;
     struct db_entry entry;
+    char resolved_path[PATH_MAX + 1]; 
 
-    char* abs_path_dir = realpath(dir, NULL);
-    if(!abs_path_dir){
-        perror("Eroare: realpath in build_database");
-        return 1;
-    }
-
-    if(NULL != (dir_stream = opendir(abs_path_dir))){
+    if(NULL != (dir_stream = opendir(dir))){
         while(NULL != (ent = readdir(dir_stream))){
             if(strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0){ // Ignora . si ..
                 continue;
             }
 
             // Construieste calea absoluta in "resolved_path"
-            snprintf(resolved_path, sizeof(resolved_path), "%s/%s", abs_path_dir, ent->d_name);
+            snprintf(resolved_path, sizeof(resolved_path), "%s/%s", dir, ent->d_name);
 
             if(0 != build_entry(resolved_path, &entry)){
                 fprintf(stderr, "Eroare: build_entry in build_database!\n");
@@ -159,7 +155,7 @@ int build_database(const char* dir){
             };
             
             if(0 != lstat(resolved_path, &st)){
-                perror("Eroare stat build_database");
+                perror("Eroare: lstat in build_database");
                 exit(1);
             };
             if(S_ISDIR(st.st_mode)){
@@ -170,11 +166,10 @@ int build_database(const char* dir){
         closedir(dir_stream);   
     }
     else{
-        perror("Eroare deschidere director");
+        perror("Eroare: opendir in build_database");
         return 3;
     }
 
-    free(abs_path_dir);
     return 0;
 }
 
@@ -220,12 +215,14 @@ int main(int argc, char** argv){
 
     char* abs_path_dir = realpath(dir, NULL);
     if(!abs_path_dir){
-        perror("Eroare: realpath in build_database");
+        perror("Eroare: realpath in main");
         return 1;
     }
 
-    build_database(dir);
+    build_database(abs_path_dir);
+
     close(fd_db);
+    free(abs_path_dir);
 
     printf("%s %s\n", dir, dest);
 }
