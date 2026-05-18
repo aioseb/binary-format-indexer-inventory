@@ -1,0 +1,10 @@
+Subcomanda rulata : build
+Timestamp start : 19:11:16_885
+Timestamp end   : 19:11:17_183
+Timpul de executie (in milisecunde) : 296
+Exit code ./tools/fileops.sh : 0
+Subcomanda rulata : run
+Timestamp start : 19:11:17_722
+Timestamp end   : 19:11:17_749
+Timpul de executie (in milisecunde) : 28
+Exit code ./tools/fileops.sh : 0

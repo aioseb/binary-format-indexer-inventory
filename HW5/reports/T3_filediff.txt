@@ -1,0 +1,9 @@
+Modificat: /home/aioseb/SO_HW/Project3/HW4/logs
+Modificat: /home/aioseb/SO_HW/Project3/HW4/tmp
+Modificat: /home/aioseb/SO_HW/Project3/HW4/tmp/modified_file.txt
+Sters: /home/aioseb/SO_HW/Project3/HW4/tmp/removed_file.txt
+Modificat: /home/aioseb/SO_HW/Project3/HW4/data
+Modificat: /home/aioseb/SO_HW/Project3/HW4/data/index_old.db
+Creat: /home/aioseb/SO_HW/Project3/HW4/logs/fileops_20260511_100101.log
+Creat: /home/aioseb/SO_HW/Project3/HW4/tmp/created_file.txt
+Creat: /home/aioseb/SO_HW/Project3/HW4/data/index_new.db

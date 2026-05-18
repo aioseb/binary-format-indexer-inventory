@@ -1,0 +1,4 @@
+PASS: ./tests/t3_concurrency.sh
+PASS: ./tests/test_init.sh
+PASS: ./tests/t4_inventory.sh
+PASS: ./tests/test_build_recursive.sh

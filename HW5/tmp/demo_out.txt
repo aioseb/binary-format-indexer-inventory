@@ -1,0 +1,3 @@
+Output: 
+5
+Cod de exit al executabilului: 0
