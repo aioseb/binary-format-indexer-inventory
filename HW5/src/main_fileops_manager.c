@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -18,7 +19,33 @@ struct manager_args{
     int db_mode;
     int verify;
     int dump;
+    int graceful_timeout;
+    char* pid_path;
 };
+
+// Flaguri pentru semnale
+volatile sig_atomic_t flag_sigusr1 = 0;
+volatile sig_atomic_t flag_sigint = 0;
+volatile sig_atomic_t flag_sigchld = 0;
+
+// STATUS-uri
+#define DB_START 0
+#define DB_PART_COMPLETE 0
+#define DB_FULL_COMPLETE 0
+
+// Handlere pentru flaguri
+void handler_sigusr1(int sig){
+    flag_sigusr1 = 1;
+}
+
+void handler_sigint(int sig){
+    flag_sigint = 1;
+}
+
+void handler_sigchld(int sig){
+    while(flag_sigchld == 1){}  // Asteapta pana cand flagul este setat la 0
+    flag_sigchld = 1;
+}
 
 // Parseaza argumentele in manager_args
 int parse_args(int argc, char** argv, struct manager_args* ma){
@@ -31,6 +58,8 @@ int parse_args(int argc, char** argv, struct manager_args* ma){
         {"simulate-work-ms", required_argument, 0, 's'},
         {"verify", no_argument, 0, 'v'},
         {"dump", no_argument, 0, 'p'},
+        {"graceful-timeout", required_argument, 0, 'g'},
+        {"pid-file", required_argument, 0, 'f'},
         {0, 0, 0, 0}
     };
 
@@ -87,6 +116,14 @@ int parse_args(int argc, char** argv, struct manager_args* ma){
             }
             break;
 
+        case 'g':
+            ma->graceful_timeout = atoi(optarg);
+            break;
+
+        case 'f':
+            ma->pid_path = optarg;
+            break;
+
         default:
             fprintf(stderr, "Folosire: %s --root <dir> --workers <N> \n"
                             "[--ipc <path>] [--db <path>] [--max-depth <D>] [--simulate-work-ms] <ms>\n", argv[0]);
@@ -134,13 +171,6 @@ int verify(const char* db_path){
     // Verifica versiunea
     if(hd->version != VERSION){
         fprintf(stderr, "versiune invalida!\n");
-        munmap(hd, sizeof(struct header_db));
-        return 1;
-    }
-
-    // Verifica daca este completa
-    if(hd->complete != 1){
-        fprintf(stderr, "baza de date incompleta!\n");
         munmap(hd, sizeof(struct header_db));
         return 1;
     }
@@ -300,10 +330,21 @@ int validate_args(struct manager_args* ma){
         return -1;
     }
 
+    if(ma->graceful_timeout < 0){
+        fprintf(stderr, "--graceful-timeout nu poate fi un numar negativ!\n");
+        return -1;
+    }
+
     return 0;
 }
 
 int main(int argc, char** argv){
+    // Facem legatura dintre semnale si headere
+    signal(SIGUSR1, handler_sigusr1);
+    signal(SIGINT, handler_sigint);
+    signal(SIGTERM, handler_sigint);
+    signal(SIGCHLD, handler_sigchld);
+
     // Argumentele programului fileops_manager
     struct manager_args ma;
     struct shared_data* sd;
@@ -318,6 +359,8 @@ int main(int argc, char** argv){
     ma.db_mode = 1;
     ma.verify = 0;
     ma.dump = 0;
+    ma.graceful_timeout = 2;    // Implicit o sa fie 2 secunde
+    ma.pid_path = NULL;
 
     int failed = 0;
 
@@ -370,7 +413,8 @@ int main(int argc, char** argv){
         goto cleanup_manager;
     }
 
-    // Initializam workerii
+    // Initializam workerii in aceeasi grupa ca si managerul (pentru a transmite mai tarziu semnale care exclud parintele)
+    setpgid(0, 0);
     if(init_workers(ma.workers, ma.ipc_path) == -1){
         fprintf(stderr, "init_workers in main fileops_manager\n");
         failed = 1;
@@ -382,20 +426,80 @@ int main(int argc, char** argv){
     int ret_value = 0;
     struct result res;
 
-    while((ret_value = dequeue_result(&res, &sd)) == 0){
+    int total_bytes = 0;
+    int workers_dead = 0;
+
+    // Bucla principala
+    while((ret_value = dequeue_result(&res, &sd)) != 1){
         // Prelucram rezultatul
-        if(append_result_db(fd_db, &res, &hd) == -1){
-            fprintf(stderr, "append_result_db in main manager\n");
-            failed = 1;
-            goto cleanup_manager;
+        if(ret_value == 0){
+            if(append_result_db(fd_db, &res, &hd) == -1){
+                fprintf(stderr, "append_result_db in main manager\n");
+                failed = 1;
+                goto cleanup_manager;
+            }
+            hd->file_record_count++;
+            total_bytes += res.size;
         }
-        hd->file_record_count++;
+
+        // Actionam in functie de flaguri in bucla principala
+
+        // Afiseaza STATUS
+        if(flag_sigusr1 == 1){
+            int queued_jobs = sd->hdr.queued_jobs;
+            int active_jobs = sd->hdr.active_jobs;
+            int files = hd->file_record_count;
+            int bytes = total_bytes;
+            int complete = hd->complete;
+            int workers_alive = sd->hdr.workers - workers_dead;
+
+            printf("STATUS queued_jobs=%d active_jobs=%d files=%d bytes=%d workers_alive=%d complete=%d\n",
+                   queued_jobs, active_jobs, files, bytes, workers_alive, complete);
+
+            flag_sigusr1 = 0;
+        }
+
+        // Decrementeaza numarul de workeri activi atunci cand un worker are semnalul SIGTERM sau SIGKILL
+        if(flag_sigchld == 1){
+            workers_dead++;
+
+            // Reap workerul curent care nu mai produce nimic pentru a nu mai avea procese zombie
+            int worker_status;
+            pid_t worker_pid = waitpid(-1, &worker_status, WNOHANG);
+
+            if(worker_pid == -1){
+                perror("waitpid in main fileops_manager (reap children)");
+                goto cleanup_manager;
+            }
+
+            flag_sigchld = 0;
+        }
+
+        // Initiere shutdown. Transmite semnale la workeri pentru a-si opri executia
+        if(flag_sigint == 1){
+            sd->hdr.active = 'E';
+
+            // Transmite semnale workerilor, mai putin parintelui
+            killpg(getpgid(0), SIGTERM);
+
+            sleep(ma.graceful_timeout); // Asteapta 'graceful_timeout' secunde pana la transmiterea SIGKILL-ului
+
+            killpg(getpgid(0), SIGKILL);
+        }
     }
 
     // Asteptam workerii sa isi publice statisticile si sa se termine
     while(wait(NULL) > 0){
     }
 
+    
+    // Marcam baza de date ca si "completata" daca toti workerii au terminat
+    if(workers_dead == 0){
+        hd->complete = 1;
+    }
+    
+    cleanup_manager:
+    
     // Publicam rezultatele ramase din coada
     if(ret_value == 1){
         while(sd->rc.head_pos != sd->rc.tail_pos){
@@ -412,7 +516,7 @@ int main(int argc, char** argv){
             sd->rc.head_pos %= CAPACITY;
         }
     }
-
+    
     long total_files = 0;
     long total_jobs = 0;
 
@@ -448,11 +552,6 @@ int main(int argc, char** argv){
     printf("Fisiere: %d\n", total_files);
     printf("Joburi : %d\n", total_jobs);
     
-    // Marcam baza de date ca si "completata"
-    hd->complete = 1;
-
-    cleanup_manager:
-
     munmap(hd, sizeof(struct header_db));
     munmap(sd, sizeof(struct shared_data));
     close(fd_db);

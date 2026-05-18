@@ -130,24 +130,27 @@ int enqueue_result(const struct result* res, struct shared_data** sd){
 
 // Citeste si scoate din coada rezultatelor un rezultat
 // Returneaza 1 daca workerii au terminat activitatea
+// Returneaza 2 daca nu s-au preluat date
 int dequeue_result(struct result* res, struct shared_data** sd){
-    sem_wait(&(*sd)->rc.result_full);
-
     if((*sd)->hdr.active == 'E'){
         sem_post(&(*sd)->rc.result_full);
         return 1;
     }
 
-    sem_wait(&(*sd)->rc.result_mutex);
+    // Incearca sa obtii un job. Returneaza 2 daca nu s-a transmis nimic prin 'res'
+    if(sem_trywait(&(*sd)->rc.result_full) == 0){
+        sem_wait(&(*sd)->rc.result_mutex);
 
-    *res = (*sd)->rc.results[(*sd)->rc.head_pos++];
-    (*sd)->rc.head_pos %= CAPACITY;
-    (*sd)->hdr.queued_results--;
+        *res = (*sd)->rc.results[(*sd)->rc.head_pos++];
+        (*sd)->rc.head_pos %= CAPACITY;
+        (*sd)->hdr.queued_results--;
 
-    sem_post(&(*sd)->rc.result_mutex);
-    sem_post(&(*sd)->rc.result_empty);
+        sem_post(&(*sd)->rc.result_mutex);
+        sem_post(&(*sd)->rc.result_empty);
+        return 0;
+    }
 
-    return 0;
+    return 2;
 }
 
 // Functii de inserare si citire a statisticilor date de catre workeri
