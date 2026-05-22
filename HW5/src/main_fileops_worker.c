@@ -6,14 +6,23 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <signal.h>
+#include <errno.h>
 #include <sys/resource.h>
 #include <sys/mman.h>
 #include "../include/sha256.h"
 #include "../include/inv_ipc.h"
 
+volatile sig_atomic_t flag_sigterm = 0;
+
+static void handler_sigterm(int sig){
+    flag_sigterm = 1;
+}
+
 struct worker_args{
     int worker_id;
     char* ipc_path;
+    int control_fd;
 };
 
 // Functii specifice statisticilor workerului
@@ -26,6 +35,22 @@ long long diff_ms(struct timespec start, struct timespec end){
 // Calculeaza in microsecunde un timeval
 long long timeval_to_us(struct timeval tv){
     return tv.tv_sec * 1000000 + tv.tv_usec; 
+}
+
+// Trimite un mesaj prin pipe
+int send_msg(int fd, const char* msg){
+    if(fd < 0){
+        fprintf(stderr, "fd negativ in send_msg\n");
+        return 1;
+    }
+
+    int len = strlen(msg);
+    if(len != write(fd, msg, len)){
+        perror("scriere mesaj partial in pipe");
+        return 1;
+    }
+
+    return 0;
 }
 
 // Parseaza argumentele in worker_args
@@ -47,6 +72,10 @@ int parse_args(int argc, char** argv, struct worker_args* wa){
 
         case 'i':
             wa->ipc_path = optarg;
+            break;
+
+        case 'c':
+            wa->control_fd = atoi(optarg);
             break;
 
         default:
@@ -86,7 +115,9 @@ int main(int argc, char** argv){
     wa.worker_id = -1;
     wa.ipc_path = NULL;
 
-    
+    // Setam handlerul
+    signal(SIGTERM, handler_sigterm);
+
     if(parse_args(argc, argv, &wa) == -1){
         fprintf(stderr, "parge_args in worker main\n");
         return 1;
@@ -110,6 +141,8 @@ int main(int argc, char** argv){
     ws.sys_cpu_us = 0;
 
     int failed = 0;
+    int exiting_sent = 0; // S-a trimis deja WORKER_EXITING?
+    char msgbuf[256];   // Bufferul pentru mesaj
 
     // printf("Am pornit workerul cu ID-ul %d pentru IPC-ul %s\n", wa.worker_id, wa.ipc_path);
 
@@ -122,6 +155,12 @@ int main(int argc, char** argv){
     struct shared_data* sd;
     if(get_mapped_data(wa.ipc_path, &sd) == -1){
         fprintf(stderr, "get_mapped_data in fileops_worker main\n");
+
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "T5MSG type=ERROR worker_id=%d errno=%d where=get_mapped_data\n",
+                wa.worker_id, errno);
+        send_msg(wa.control_fd, msgbuf);
+
         failed = 1;
         goto cleanup;
     }
@@ -139,7 +178,26 @@ int main(int argc, char** argv){
             usleep(sd->hdr.simulate_work_ms * 1000);
         }
 
+        // Verificam daca workerul a primit SIGTERM
+        if(flag_sigterm == 1){
+            // Shutdown gratios
+            snprintf(msgbuf, sizeof(msgbuf),
+                 "T5MSG type=WORKER_EXITING worker_id=%d reason=shutdown\n",
+                wa.worker_id);
+            send_msg(wa.control_fd, msgbuf);
+            exiting_sent = 1;
+
+            break;
+        }
+
+        // Workerii au terminat in mod normal
         if(dequeue_job(&job, &sd) == 1){
+            snprintf(msgbuf, sizeof(msgbuf),
+                 "T5MSG type=WORKER_EXITING worker_id=%d reason=normal\n",
+                wa.worker_id);
+            send_msg(wa.control_fd, msgbuf);
+            exiting_sent = 1;
+
             break;
         }
         
@@ -152,6 +210,12 @@ int main(int argc, char** argv){
         if(!dir) {
             perror("opendir in fileops_worker main");
             failed = 1;
+
+            snprintf(msgbuf, sizeof(msgbuf),
+                 "T5MSG type=ERROR worker_id=%d errno=%d where=opendir\n",
+                wa.worker_id, errno);
+            send_msg(wa.control_fd, msgbuf);
+
             goto cleanup;
         }
         
@@ -164,7 +228,14 @@ int main(int argc, char** argv){
 
             if(lstat(resolved_path, &st) == -1){
                 perror("lstat in fileops_worker main");
+                closedir(dir);
                 failed = 1;
+
+                snprintf(msgbuf, sizeof(msgbuf),
+                        "T5MSG type=ERROR worker_id=%d errno=%d where=lstat\n",
+                        wa.worker_id, errno);
+                send_msg(wa.control_fd, msgbuf);
+                
                 goto cleanup;
             }
 
@@ -176,6 +247,12 @@ int main(int argc, char** argv){
                 if(enqueue_job(&temp_job, &sd) == -1){
                     fprintf(stderr, "enqueue_job in fileops_worker main\n");
                     failed = 1;
+
+                    snprintf(msgbuf, sizeof(msgbuf),
+                        "T5MSG type=ERROR worker_id=%d errno=%d where=enqueue_job\n",
+                        wa.worker_id, errno);
+                    send_msg(wa.control_fd, msgbuf);
+
                     goto cleanup;
                 }
                 
@@ -195,6 +272,12 @@ int main(int argc, char** argv){
                 if(fd == -1){
                     perror("open in main fileops_worker");
                     failed = 1;
+
+                    snprintf(msgbuf, sizeof(msgbuf),
+                        "T5MSG type=ERROR worker_id=%d errno=%d where=open_file\n",
+                        wa.worker_id, errno);
+                    send_msg(wa.control_fd, msgbuf);
+
                     goto cleanup;
                 }
 
@@ -213,6 +296,12 @@ int main(int argc, char** argv){
                 if(bytes_read == -1){
                     perror("read in main fileops_worker");
                     failed = 1;
+
+                    snprintf(msgbuf, sizeof(msgbuf),
+                        "T5MSG type=ERROR worker_id=%d errno=%d where=read_file\n",
+                        wa.worker_id, errno);
+                    send_msg(wa.control_fd, msgbuf);
+
                     goto cleanup;
                 }
 
@@ -223,6 +312,12 @@ int main(int argc, char** argv){
                 if(enqueue_result(&res, &sd) == -1){
                     fprintf(stderr, "enqueue_result in fileops_worker main\n");
                     failed = 1;
+
+                    snprintf(msgbuf, sizeof(msgbuf),
+                        "T5MSG type=ERROR worker_id=%d errno=%d where=enqueue_result\n",
+                        wa.worker_id, errno);
+                    send_msg(wa.control_fd, msgbuf);
+
                     goto cleanup;
                 }
 
@@ -236,6 +331,15 @@ int main(int argc, char** argv){
                 
         // Incrementam numarul de joburi procesate
         ws.jobs_processed++;
+
+        // Pentru fiecare job procesat transmitem un mesaj JOB_DONE
+        snprintf(msgbuf, sizeof(msgbuf),
+            "T5MSG type=JOB_DONE worker_id=%d jobs=%d"
+            " files=%d bytes=%lld\n",
+            wa.worker_id, ws.jobs_processed,
+            ws.files_emitted, ws.bytes_emitted);
+        send_msg(wa.control_fd, msgbuf);
+
 
         // Decrementam numarul de joburi active
         sem_wait(&sd->jq.job_mutex);
@@ -275,6 +379,15 @@ int main(int argc, char** argv){
         }
 
         sem_post(&sd->jq.job_mutex);
+    }
+
+    // Transmite mesajul WORKER_EXITING daca nu a fost trimis deja
+    if(exiting_sent == 0){
+        const char* reason = failed ? "error" : "normal";
+        snprintf(msgbuf, sizeof(msgbuf),
+                 "T5MSG type=WORKER_EXITING worker_id=%d reason=%s\n",
+                 wa.worker_id, reason);
+        send_msg(wa.control_fd, msgbuf);
 
     }
 

@@ -43,7 +43,6 @@ void handler_sigint(int sig){
 }
 
 void handler_sigchld(int sig){
-    while(flag_sigchld == 1){}  // Asteapta pana cand flagul este setat la 0
     flag_sigchld = 1;
 }
 
@@ -478,6 +477,7 @@ int main(int argc, char** argv){
         // Initiere shutdown. Transmite semnale la workeri pentru a-si opri executia
         if(flag_sigint == 1){
             sd->hdr.active = 'E';
+            sem_post(&sd->jq.job_full); // Trimite semnal workerilor care asteapta un job nou
 
             // Transmite semnale workerilor, mai putin parintelui
             killpg(getpgid(0), SIGTERM);
@@ -494,7 +494,7 @@ int main(int argc, char** argv){
 
     
     // Marcam baza de date ca si "completata" daca toti workerii au terminat
-    if(workers_dead == 0){
+    if(workers_dead == 0 && flag_sigint == 0){
         hd->complete = 1;
     }
     
