@@ -117,7 +117,7 @@ int push_worker_stats(const struct worker_stats* wstats, struct shared_data** sd
 int pop_worker_stats(struct worker_stats* wstats, struct shared_data** sd);
 int get_mapped_data(const char* ipc_path, struct shared_data** sd);
 
-int init_workers(int workers, const char* ipc);
+int init_workers(int workers, const char* ipc, int control_fd, pid_t* pids);
 int init_shared_data(struct shared_data* sd, int workers, int max_depth, int capacity, int simulate_work_ms);
 int init_header(struct header* hdr, int workers, int max_depth, int capacity, int simulate_work_ms);
 int init_job_queue(struct job_queue* jq);

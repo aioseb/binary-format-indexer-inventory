@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <errno.h>
 #include "../include/inv_ipc.h"
 
 // Initializeaza IPC-ul si il mapeaza
@@ -71,8 +72,12 @@ int enqueue_job(const struct job_t* job, struct shared_data** sd){
     temp_job.depth = job->depth;
     strcpy(temp_job.job_name, abs_path);
 
-    sem_wait(&(*sd)->jq.job_empty);
-    sem_wait(&(*sd)->jq.job_mutex);
+    while(sem_wait(&(*sd)->jq.job_empty) == -1) {
+        if (errno != EINTR) { perror("sem_wait job_empty"); return -1; }
+    }
+    while(sem_wait(&(*sd)->jq.job_mutex) == -1) {
+        if (errno != EINTR) { perror("sem_wait job_mutex"); return -1; }
+    }
 
     (*sd)->jq.jobs[(*sd)->jq.tail_pos++] = temp_job; 
     (*sd)->jq.tail_pos %= CAPACITY;
@@ -90,14 +95,18 @@ int enqueue_job(const struct job_t* job, struct shared_data** sd){
 // Returneaza 1 daca nu mai este nimic de citit din coada
 int dequeue_job(struct job_t* job, struct shared_data** sd){
     // Scoatem din coada un job si il returnam prin intermediul lui job[]
-    sem_wait(&(*sd)->jq.job_full);
+    while(sem_wait(&(*sd)->jq.job_full) == -1) {
+        if (errno != EINTR) { perror("sem_wait job_full"); return -1; }
+    }
     
     if ((*sd)->hdr.active == 'E') {
         sem_post(&(*sd)->jq.job_full); // ultimul worker nu mai are ce sa faca; anunta-i pe ceilalti workeri si managerul
         return 1;
     }
 
-    sem_wait(&(*sd)->jq.job_mutex);
+    while(sem_wait(&(*sd)->jq.job_mutex) == -1) {
+        if (errno != EINTR) { perror("sem_wait job_mutex"); return -1; }
+    }
 
     *job = (*sd)->jq.jobs[(*sd)->jq.head_pos++];
     (*sd)->jq.head_pos %= CAPACITY;
@@ -115,8 +124,12 @@ int dequeue_job(struct job_t* job, struct shared_data** sd){
 
 // Pune in coada rezultatelor un rezultat
 int enqueue_result(const struct result* res, struct shared_data** sd){
-    sem_wait(&(*sd)->rc.result_empty);
-    sem_wait(&(*sd)->rc.result_mutex);
+    while(sem_wait(&(*sd)->rc.result_empty) == -1) {
+        if (errno != EINTR) return -1;
+    }
+    while(sem_wait(&(*sd)->rc.result_mutex) == -1) {
+        if (errno != EINTR) return -1;
+    }
 
     (*sd)->rc.results[(*sd)->rc.tail_pos++] = *res; 
     (*sd)->rc.tail_pos %= CAPACITY;
@@ -138,8 +151,15 @@ int dequeue_result(struct result* res, struct shared_data** sd){
     }
 
     // Incearca sa obtii un job. Returneaza 2 daca nu s-a transmis nimic prin 'res'
-    if(sem_trywait(&(*sd)->rc.result_full) == 0){
-        sem_wait(&(*sd)->rc.result_mutex);
+    int try_ret = sem_trywait(&(*sd)->rc.result_full);
+    if(try_ret == -1){
+        return 2;   // Fie coada este goala, fie s-a primit semnalul EINTR
+    }
+
+    if(try_ret == 0){
+        while(sem_wait(&(*sd)->rc.result_mutex) == -1) {
+            if (errno != EINTR) return -1;
+        }
 
         *res = (*sd)->rc.results[(*sd)->rc.head_pos++];
         (*sd)->rc.head_pos %= CAPACITY;
@@ -221,8 +241,9 @@ int get_mapped_data(const char* ipc_path, struct shared_data** sd){
 
 // Functii de initializare
 
-// Incepe executia a unui anumit numar de workeri cu programul fileops_worker
-int init_workers(int workers, const char* ipc){
+// Incepe executia a unui anumit numar de workeri cu programul fileops_worker.
+// Salveaza PID-urile copiilor in pids[]
+int init_workers(int workers, const char* ipc, int control_fd, pid_t* pids){
     char worker_id[16];
 
     for(int worker = 0; worker < workers; worker++){
@@ -244,6 +265,10 @@ int init_workers(int workers, const char* ipc){
                 perror("execvp in init_workers");
                 return -1;
             }
+        }
+
+        if(pids != NULL){
+            pids[worker] = cpid;
         }
     }
 

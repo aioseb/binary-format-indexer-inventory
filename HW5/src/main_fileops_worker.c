@@ -117,6 +117,7 @@ int main(int argc, char** argv){
 
     // Setam handlerul
     signal(SIGTERM, handler_sigterm);
+    signal(SIGINT, handler_sigterm);
 
     if(parse_args(argc, argv, &wa) == -1){
         fprintf(stderr, "parge_args in worker main\n");
@@ -178,7 +179,7 @@ int main(int argc, char** argv){
             usleep(sd->hdr.simulate_work_ms * 1000);
         }
 
-        // Verificam daca workerul a primit SIGTERM
+        // Verificam daca workerul a primit SIGTERM; nu mai preluam joburi
         if(flag_sigterm == 1){
             // Shutdown gratios
             snprintf(msgbuf, sizeof(msgbuf),
@@ -220,7 +221,7 @@ int main(int argc, char** argv){
         }
         
         struct dirent* entry;
-        while((entry = readdir(dir)) != NULL){
+        while((entry = readdir(dir)) != NULL && exiting_sent == 0){
             if(strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0){
                 continue;   // Sarim peste . si ..
             }
