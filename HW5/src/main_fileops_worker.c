@@ -58,12 +58,13 @@ int parse_args(int argc, char** argv, struct worker_args* wa){
     struct option long_opts[] = {
         {"worker-id", required_argument, 0, 'w'},
         {"ipc", required_argument, 0, 'i'},
+        {"control-fd", required_argument, 0, 'c'},
         {0, 0, 0, 0}
     };
 
     // Parsam optiunile
     int opt;
-    while ((opt = getopt_long(argc, argv, "r:w:i:d:m:s:vp", long_opts, NULL)) != -1){
+    while ((opt = getopt_long(argc, argv, "w:i:c:", long_opts, NULL)) != -1){
         switch(opt){
 
         case 'w':
@@ -114,6 +115,7 @@ int main(int argc, char** argv){
     struct worker_args wa;
     wa.worker_id = -1;
     wa.ipc_path = NULL;
+    wa.control_fd = -1;
 
     // Setam handlerul
     signal(SIGTERM, handler_sigterm);
@@ -355,10 +357,6 @@ int main(int argc, char** argv){
             }
         }
         sem_post(&sd->jq.job_mutex);
-
-        if(sd->hdr.simulate_work_ms != 0){
-            printf("Worker ID: %d\nJob procesat: %s\nDepth: %d\n\n", wa.worker_id, job.job_name, job.depth);
-        }
     }
 
     cleanup:

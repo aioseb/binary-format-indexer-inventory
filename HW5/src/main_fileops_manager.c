@@ -39,7 +39,7 @@ char pipe_msg_buf[PIPE_READ_BUF];   // Bufferul din care citim mesajele din pipe
 int pipe_msg_len = 0;   // Lungimea totala a mesajelor din pipe
 
 void print_msg(const char* msg){
-    printf("[T5MSG] %s\n", msg);
+    printf("%s\n", msg);
     fflush(stdout);
 }
 
@@ -68,9 +68,17 @@ int read_pipe_messages(int pipe_fd){
 
     while((right = memchr(left, '\n', pipe_msg_len - (left - pipe_msg_buf))) != NULL){
         *right = '\0';
-        printf("%d\n", left);
+        print_msg(left);
         left = right + 1;
     }
+
+    int remaining_bytes = pipe_msg_len - (left - pipe_msg_buf);
+    if (remaining_bytes > 0) {
+        memmove(pipe_msg_buf, left, remaining_bytes);
+    }
+    
+    // Actualizam lungimea buffer-ului pentru urmatoarea citire
+    pipe_msg_len = remaining_bytes;
 
     return 0;
 }
@@ -442,13 +450,16 @@ int main(int argc, char** argv){
 
     // Scriem fisierul si creem pipe-ul de control
     if(ma.pid_path != NULL){
-        int fd = open(ma.pid_path, O_WRONLY);
+        int fd = open(ma.pid_path, O_WRONLY | O_TRUNC | O_CREAT, 0644);
         if (fd <= 0) {
             perror("Initializare DB: open pid-file");
             return 1;
         }
         int pid = getpid();
-        write(fd, &pid, sizeof(int));
+        char pid_str[10];
+        int len = snprintf(pid_str, 10, "%d", pid);
+
+        write(fd, pid_str, len);
         close(fd);
     }
 

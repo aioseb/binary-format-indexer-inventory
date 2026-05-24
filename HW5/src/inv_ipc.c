@@ -245,11 +245,13 @@ int get_mapped_data(const char* ipc_path, struct shared_data** sd){
 // Salveaza PID-urile copiilor in pids[]
 int init_workers(int workers, const char* ipc, int control_fd, pid_t* pids){
     char worker_id[16];
+    char control_fd_str[16];
 
     for(int worker = 0; worker < workers; worker++){
         pid_t cpid = fork();
 
         snprintf(worker_id, 10, "%d", worker);
+        snprintf(control_fd_str, 10, "%d", control_fd);
 
         char* args[] = {
             "../bin/fileops_worker",
@@ -257,6 +259,8 @@ int init_workers(int workers, const char* ipc, int control_fd, pid_t* pids){
             worker_id,
             "--ipc",
             ipc,
+            "--control-fd",
+            control_fd_str,
             NULL
         };
 

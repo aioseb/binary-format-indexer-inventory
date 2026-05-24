@@ -1,3 +1,4 @@
+PASS: ./tests/t5_signals_pipes.sh
 PASS: ./tests/t3_concurrency.sh
 PASS: ./tests/test_init.sh
 PASS: ./tests/t4_inventory.sh
